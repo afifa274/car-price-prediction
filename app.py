@@ -49,14 +49,19 @@ st.markdown("""
 @st.cache_data
 def load_data():
     df = pd.read_csv("cardekho.csv")
+    # Extract numeric values from columns that may contain units (e.g. "23.4 kmpl")
     for col in ["mileage(km/ltr/kg)", "engine", "max_power"]:
-        if df[col].dtype == object:
-            df[col] = pd.to_numeric(
-                df[col].astype(str).str.extract(r"([\d.]+)")[0], errors="coerce"
-            )
+        df[col] = pd.to_numeric(
+            df[col].astype(str).str.extract(r"([\d.]+)")[0], errors="coerce"
+        )
+    # Ensure all numeric columns are float64
+    for col in ["year", "selling_price", "km_driven",
+                "mileage(km/ltr/kg)", "engine", "max_power", "seats"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
     df["car_age"] = 2024 - df["year"]
     df.dropna(subset=["selling_price", "mileage(km/ltr/kg)",
                        "engine", "max_power", "seats"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
     return df
 
 # ── Train model (runs once, cached to model.pkl) ──────────────────────────────
@@ -73,7 +78,15 @@ def get_model():
     cat_cols     = ["fuel", "seller_type", "transmission", "owner"]
 
     X = df[FEATURES].copy()
-    y = df["selling_price"].copy()
+    y = df["selling_price"].astype(float).copy()
+
+    # Explicitly cast numeric cols to float and categorical cols to str
+    for c in numeric_cols:
+        X[c] = pd.to_numeric(X[c], errors="coerce")
+    for c in cat_cols:
+        X[c] = X[c].astype(str)
+    X.dropna(subset=numeric_cols, inplace=True)
+    y = y.loc[X.index]
 
     preprocessor = ColumnTransformer([
         ("num", StandardScaler(), numeric_cols),
@@ -170,16 +183,16 @@ with tab_predict:
 
     if predict_btn:
         input_data = pd.DataFrame([{
-            "car_age":              car_age,
-            "km_driven":            km_driven,
-            "mileage(km/ltr/kg)":   mileage,
+            "car_age":              float(car_age),
+            "km_driven":            float(km_driven),
+            "mileage(km/ltr/kg)":   float(mileage),
             "engine":               float(engine),
-            "max_power":            max_power,
+            "max_power":            float(max_power),
             "seats":                float(seats),
-            "fuel":                 fuel,
-            "seller_type":          seller_type,
-            "transmission":         transmission,
-            "owner":                owner,
+            "fuel":                 str(fuel),
+            "seller_type":          str(seller_type),
+            "transmission":         str(transmission),
+            "owner":                str(owner),
         }])
 
         predicted_price = pipeline.predict(input_data)[0]
