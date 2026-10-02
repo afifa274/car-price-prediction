@@ -5,12 +5,19 @@ Streamlit frontend for Car Price Prediction.
 Run:  streamlit run app.py
 """
 
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
 import plotly.express as px
 import plotly.graph_objects as go
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OrdinalEncoder, StandardScaler
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, r2_score
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -38,11 +45,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Load model ────────────────────────────────────────────────────────────────
-@st.cache_resource
-def load_model():
-    return joblib.load("model.pkl")
-
+# ── Data loader ───────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
     df = pd.read_csv("cardekho.csv")
@@ -56,37 +59,71 @@ def load_data():
                        "engine", "max_power", "seats"], inplace=True)
     return df
 
-try:
-    artefact = load_model()
-    pipeline = artefact["pipeline"]
-    meta     = artefact["meta"]
-    model_ready = True
-except FileNotFoundError:
-    model_ready = False
+# ── Train model (runs once, cached to model.pkl) ──────────────────────────────
+@st.cache_resource
+def get_model():
+    if os.path.exists("model.pkl"):
+        return joblib.load("model.pkl")
+
+    # Build and train pipeline from scratch
+    df = load_data()
+    FEATURES     = ["car_age", "km_driven", "mileage(km/ltr/kg)", "engine",
+                     "max_power", "seats", "fuel", "seller_type", "transmission", "owner"]
+    numeric_cols = ["car_age", "km_driven", "mileage(km/ltr/kg)", "engine", "max_power", "seats"]
+    cat_cols     = ["fuel", "seller_type", "transmission", "owner"]
+
+    X = df[FEATURES].copy()
+    y = df["selling_price"].copy()
+
+    preprocessor = ColumnTransformer([
+        ("num", StandardScaler(), numeric_cols),
+        ("cat", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1), cat_cols),
+    ])
+    pipeline = Pipeline([
+        ("preprocessor", preprocessor),
+        ("model", RandomForestRegressor(n_estimators=200, max_depth=15,
+                                        min_samples_split=4, random_state=42, n_jobs=-1)),
+    ])
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    pipeline.fit(X_train, y_train)
+    y_pred = pipeline.predict(X_test)
+    mae = mean_absolute_error(y_test, y_pred)
+    r2  = r2_score(y_test, y_pred)
+
+    meta = {
+        "features": FEATURES, "numeric_cols": numeric_cols, "categorical_cols": cat_cols,
+        "unique_fuels":         sorted(df["fuel"].dropna().unique().tolist()),
+        "unique_seller_types":  sorted(df["seller_type"].dropna().unique().tolist()),
+        "unique_transmissions": sorted(df["transmission"].dropna().unique().tolist()),
+        "unique_owners":        sorted(df["owner"].dropna().unique().tolist()),
+        "min_year": int(df["year"].min()), "max_year": int(df["year"].max()),
+        "mae": round(mae, 2), "r2": round(r2, 4),
+    }
+    artefact = {"pipeline": pipeline, "meta": meta}
+    joblib.dump(artefact, "model.pkl")
+    return artefact
 
 df = load_data()
 
+with st.spinner("Loading model (first run may take ~30 seconds to train)..."):
+    artefact = get_model()
+    pipeline = artefact["pipeline"]
+    meta     = artefact["meta"]
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Camponotus_flavomarginatus_ant.jpg/320px-Camponotus_flavomarginatus_ant.jpg",
-             use_column_width=True, caption="")
     st.title("🚗 Car Price Predictor")
     st.markdown("---")
     st.markdown("**Dataset:** CarDekho")
     st.markdown(f"**Records:** {len(df):,}")
-    if model_ready:
-        st.markdown(f"**Model R²:** {meta['r2']}")
-        st.markdown(f"**Model MAE:** ₹{meta['mae']:,.0f}")
+    st.markdown(f"**Model R²:** {meta['r2']}")
+    st.markdown(f"**Model MAE:** ₹{meta['mae']:,.0f}")
     st.markdown("---")
     st.markdown("Built with **Streamlit** + **scikit-learn**")
 
 # ── Main title ────────────────────────────────────────────────────────────────
 st.title("🚗 Car Price Prediction")
 st.markdown("Predict the resale price of any used car using a trained **Random Forest** model on the CarDekho dataset.")
-
-if not model_ready:
-    st.error("⚠️ model.pkl not found. Please run `python train_model.py` first.")
-    st.stop()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tab_predict, tab_explore, tab_model = st.tabs(
